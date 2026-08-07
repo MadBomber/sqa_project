@@ -1,0 +1,9 @@
+# Sub-repos: each is an independent git repo with its own GitHub remote.
+/sqa/
+/sqa-tai/
+/sqa-cli/
+/sqa-advisor/
+/sqa-rails/
+/sqa-sinatra/
+
+.DS_Store
