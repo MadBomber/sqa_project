@@ -1,0 +1,98 @@
+# frozen_string_literal: true
+# Workspace health dashboard — status, versions, paths, unpushed.
+
+class Tasks
+  desc "Full health dashboard: status, unpushed, paths, versions"
+  depends_on :status, :unpushed, :paths, :versions
+  def check
+    puts "\nHealth dashboard complete."
+  end
+
+  desc "Show uncommitted changes across all repos"
+  def status
+    found = false
+    @@repos.each do |repo|
+      output = `git -C "#{repo}" status --short 2>/dev/null`.strip
+      next if output.empty?
+      found = true
+      puts "\n\e[1;33m── #{repo}\e[0m"
+      puts output
+    end
+    puts "All repos clean — nothing uncommitted." unless found
+  end
+
+  desc "Show commits not yet pushed to the remote"
+  def unpushed
+    found = false
+    @@repos.each do |repo|
+      output = `git -C "#{repo}" log --oneline '@{u}..' 2>/dev/null`.strip
+      next if output.empty?
+      found = true
+      puts "\n\e[1;36m── #{repo}\e[0m"
+      puts output
+    end
+    puts "Nothing unpushed across all repos." unless found
+  end
+
+  desc "Show active Gemfile path: overrides (local sibling wiring)"
+  def paths
+    found = false
+    @@repos.each do |repo|
+      output = `grep -n 'path:' "#{repo}/Gemfile" 2>/dev/null`.strip
+      next if output.empty?
+      found = true
+      puts "\n\e[1;35m── #{repo}/Gemfile\e[0m"
+      puts output
+    end
+    puts "No local path: overrides active — all repos use released gems." unless found
+  end
+
+  desc "Show local version, branch, and latest RubyGems release for every gem"
+  def versions
+    require "net/http"
+    require "json"
+
+    col = 16
+    puts ""
+    @@repos.each do |repo|
+      version = extract_gem_version(repo)
+      branch  = git_branch(repo)
+      rg      = rubygems_info(repo)
+      rg_str  = rg ? "RubyGems: #{rg[1]} v#{rg[0]}" : "RubyGems: (not published)"
+      ahead   = rg && rg[0] != version ? " \e[33m[local ahead of last release]\e[0m" : ""
+      puts "#{repo.ljust(col)} v#{version}  (#{branch})  #{rg_str}#{ahead}"
+    end
+    puts ""
+
+    distinct = @@repos.map { |repo| extract_gem_version(repo) }.uniq
+    if distinct.size == 1
+      puts "\e[32mLockstep: all components at v#{distinct.first}.\e[0m"
+    else
+      puts "\e[33mLockstep: components differ (#{distinct.sort.join(', ')}). " \
+           "Run `asgard set_version X.Y.Z` to unify.\e[0m"
+    end
+  end
+
+  no_commands do
+    def extract_gem_version(repo)
+      file = Dir.glob("#{repo}/lib/**/version.rb").first
+      return "(version.rb not found)" unless file
+      File.read(file)[/VERSION\s*=\s*['"]([^'"]+)['"]/, 1] || "(VERSION not found)"
+    end
+
+    def git_branch(repo)
+      branch = `git -C "#{repo}" rev-parse --abbrev-ref HEAD 2>/dev/null`.strip
+      branch.empty? ? "?" : branch
+    end
+
+    def rubygems_info(gemname)
+      uri      = URI("https://rubygems.org/api/v1/gems/#{gemname}.json")
+      response = Net::HTTP.get_response(uri)
+      return nil unless response.is_a?(Net::HTTPSuccess)
+      data = JSON.parse(response.body)
+      [data["version"], data["version_created_at"].to_s[0, 10]]
+    rescue StandardError
+      nil
+    end
+  end
+end

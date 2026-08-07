@@ -1,0 +1,20 @@
+# frozen_string_literal: true
+# Sync shared quality-tooling config to all gem repos.
+#
+# Unlike robot_lab_project, sqa's gems version independently (no lockstep
+# core/extension versioning), so there's no version-bump/sync task here —
+# only the shared RuboCop config, which genuinely is copied per repo.
+# .reek.yml needs no sync: repo_dev.loki's reek_scan resolves it by walking
+# up from the repo to this workspace root, so one copy here covers everyone.
+
+class Tasks
+  desc "Propagate .rubocop.yml.common to all gem repos (excludes sqa-rails, which uses rubocop-rails-omakase)"
+  def sync_rubocop
+    source = ".rubocop.yml.common"
+    abort "#{source} not found" unless File.exist?(source)
+    @@gems.each do |repo|
+      sh "cp \"#{source}\" \"#{repo}/.rubocop.yml\""
+      printf "\e[1;32m%-32s\e[0m updated\n", repo
+    end
+  end
+end

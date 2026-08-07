@@ -1,0 +1,32 @@
+# frozen_string_literal: true
+# SQA workspace — entry point. Run `asgard help` for available tasks.
+
+import "ws_overview.loki"
+import "ws_quality.loki"
+import "ws_gems.loki"
+import "ws_git.loki"
+import "ws_sync.loki"
+import "ws_version.loki"
+
+class Tasks
+  @@repos ||= %w[
+    sqa
+    sqa-tai
+    sqa-cli
+    sqa-advisor
+    sqa-sinatra
+    sqa-rails
+  ].freeze
+  @@gems   ||= (@@repos - ["sqa-rails"]).freeze
+  @@github ||= "git@github.com:MadBomber".freeze
+
+  helper(:workspace_version) do
+    file = Dir.glob("sqa/lib/**/version.rb").first
+    file ? File.read(file)[/VERSION\s*=\s*['"]([^'"]+)['"]/, 1] : "?.?.?" rescue "?.?.?"
+  end
+
+  header "SQA Workspace v#{workspace_version} — #{@@gems.size} gems + 1 Rails demo"
+  footer "Run `asgard help <task>` for usage details"
+
+  default_task :check
+end

@@ -1,0 +1,143 @@
+# frozen_string_literal: true
+# Coordinated (lockstep) versioning across all SQA components.
+#
+# Every component carries ONE shared version. Tasks:
+#   asgard set_version 0.3.0        — set ALL components to an exact version
+#   asgard bump [major|minor|patch] — increment the shared version (default: patch)
+#
+# Each write rewrites the component's lib/**/version.rb, prepends a dated entry
+# to its CHANGELOG.md, and commits in that repo. Pass --no-commit to edit the
+# files without committing. Tagging/publishing stays separate (per-repo
+# `asgard release`). Use `asgard versions` to view current state / lockstep.
+#
+# sqa-rails is a Rails app (not a gem) but is versioned in lockstep too, via
+# lib/sqa_demo/rails/version.rb — a plain VERSION holder that Zeitwerk ignores.
+
+class Tasks
+  VERSION_RE = /\A\d+\.\d+\.\d+\z/
+  BUMP_PARTS = %w[major minor patch].freeze
+
+  desc "set_version VERSION", "Set ALL components to VERSION (lockstep), update CHANGELOGs, commit"
+  option :commit, type: :boolean, default: true,
+                  desc: "Commit the change in each repo (--no-commit to only edit files)"
+  def set_version(version)
+    unless version =~ VERSION_RE
+      abort "Invalid version '#{version}' — expected MAJOR.MINOR.PATCH, e.g. 0.3.0"
+    end
+    apply_version(version, options[:commit])
+  end
+
+  desc "bump [major|minor|patch]", "Increment the shared version (default: patch) across all components"
+  option :commit, type: :boolean, default: true,
+                  desc: "Commit the change in each repo (--no-commit to only edit files)"
+  def bump(part = "patch")
+    part = part.to_s.downcase
+    abort "Unknown bump part '#{part}' — use: #{BUMP_PARTS.join(', ')}" unless BUMP_PARTS.include?(part)
+
+    current     = lockstep_version!
+    new_version = increment_version(current, part)
+    puts "Bumping #{part}: v#{current} -> v#{new_version}\n"
+    apply_version(new_version, options[:commit])
+  end
+
+  no_commands do
+    # VERSION string from a repo's lib/**/version.rb (or "?" if absent).
+    def component_version(repo)
+      file = version_file(repo)
+      file ? (File.read(file)[/VERSION\s*=\s*['"]([^'"]+)['"]/, 1] || "?") : "?"
+    end
+
+    def version_file(repo)
+      Dir.glob("#{repo}/lib/**/version.rb").first
+    end
+
+    # The single shared version, or abort if components have drifted apart.
+    def lockstep_version!
+      distinct = @@repos.map { |repo| component_version(repo) }.uniq
+      return distinct.first if distinct.size == 1
+
+      abort "Components are not in lockstep (#{distinct.sort.join(', ')}). " \
+            "Run `asgard set_version X.Y.Z` first to unify, then bump."
+    end
+
+    def increment_version(version, part)
+      major, minor, patch = version.split(".").map(&:to_i)
+      case part
+      when "major" then "#{major + 1}.0.0"
+      when "minor" then "#{major}.#{minor + 1}.0"
+      else              "#{major}.#{minor}.#{patch + 1}"
+      end
+    end
+
+    # Write version.rb + CHANGELOG for every component, optionally committing.
+    def apply_version(version, do_commit)
+      date = Time.now.strftime("%Y-%m-%d")
+      @@repos.each do |repo|
+        write_version(repo, version)
+        update_changelog(repo, version, date)
+        commit_component(repo, version) if do_commit
+        printf "  \e[32m%-16s\e[0m v#{version}%s\n", repo, (do_commit ? " (committed)" : "")
+      end
+      puts ""
+      if do_commit
+        puts "  All components set to v#{version} and committed. Tag/publish separately (`asgard release`)."
+      else
+        puts "  All components set to v#{version} (files edited, NOT committed)."
+      end
+    end
+
+    def write_version(repo, version)
+      file = version_file(repo) or abort "No lib/**/version.rb found in #{repo}"
+      content = File.read(file)
+      updated = content.sub(/(VERSION\s*=\s*['"])[^'"]+(['"])/, "\\1#{version}\\2")
+      abort "No VERSION assignment found in #{file}" if updated == content
+      File.write(file, updated)
+    end
+
+    # Prepend a dated release section just below [Unreleased], creating the
+    # CHANGELOG (Keep a Changelog format) if the repo doesn't have one.
+    def update_changelog(repo, version, date)
+      path  = File.join(repo, "CHANGELOG.md")
+      entry = "## [#{version}] - #{date}\n- Coordinated version bump to v#{version} across the SQA workspace.\n"
+
+      unless File.exist?(path)
+        File.write(path, new_changelog(entry))
+        return
+      end
+
+      lines     = File.readlines(path)
+      insert_at = lines.index { |line| line =~ /\A## \[/ && line !~ /\A## \[Unreleased\]/i }
+      if insert_at
+        lines.insert(insert_at, "#{entry}\n")
+      else
+        lines << "\n" unless lines.empty? || lines.last.end_with?("\n")
+        lines << entry
+      end
+      File.write(path, lines.join)
+    end
+
+    def new_changelog(entry)
+      <<~CHANGELOG
+        # Changelog
+
+        All notable changes to this project will be documented in this file.
+
+        The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+        and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+        ## [Unreleased]
+
+        #{entry}
+      CHANGELOG
+    end
+
+    def commit_component(repo, version)
+      rel = [version_file(repo), File.join(repo, "CHANGELOG.md")].compact.map do |f|
+        f.sub(%r{\A#{Regexp.escape(repo)}/}, "")
+      end
+      staged = rel.map { |f| "\"#{f}\"" }.join(" ")
+      ok = system(%(cd "#{repo}" && git add #{staged} && git commit -q -m "chore(release): v#{version}"))
+      abort "git commit failed in #{repo}" unless ok
+    end
+  end
+end
